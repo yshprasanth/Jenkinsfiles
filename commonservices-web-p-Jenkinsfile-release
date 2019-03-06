@@ -1,0 +1,47 @@
+#!groovy
+@Library("pipeline-uk@2.0.0") _
+
+pipeline {
+    agent { label 'maven' }
+    options {
+        skipDefaultCheckout()
+        disableConcurrentBuilds()
+    }
+    stages {
+        stage ('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        stage ('Prepare Maven Release') {
+            steps {
+                sh "git config user.name \"C0251501\""
+                sh "git config user.email chris.dines@isbanuk.com"
+                sh "git config --global http.sslVerify false"
+				withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'test-credential', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASSWORD']]) {
+                    sh 'MAVEN_OPTS="-Xmx1024m" ' + "mvn -Dtag=${params.RELEASE_VERSION} release:prepare -DreleaseVersion=${params.RELEASE_VERSION} -DdevelopmentVersion=${params.DEVELOPMENT_VERSION} -Dusername=${GIT_USER} -Dpassword=${GIT_PASSWORD} "
+                }	
+            }
+        }
+        stage ('Perform Maven Release') {
+            steps {
+                withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'test-credential', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASSWORD']]) {
+                    sh 'mvn release:perform'
+                }
+            }
+        }
+    }
+	post {
+        failure {
+            emailext(
+				to: 'DLPiplelineUKDevelopers@produban.co.uk',
+                subject: "Jenkins FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "<a href='${env.BUILD_URL}'>Fix!</a>",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider'],
+									[$class: 'CulpritsRecipientProvider'],
+                                    [$class: 'RequesterRecipientProvider'],
+									[$class: 'FirstFailingBuildSuspectsRecipientProvider']]
+            )
+        }
+    }
+}

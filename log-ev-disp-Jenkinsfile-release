@@ -1,0 +1,34 @@
+#!groovy
+@Library("pipeline-uk@1.4.0") _
+ 
+pipeline {
+    agent { label 'maven' }
+    options {
+        skipDefaultCheckout()
+        disableConcurrentBuilds()
+    }
+    stages {
+        stage ('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        stage ('Prepare Maven Release') {
+            steps {
+                sh "git config user.name \"E1153651\""
+                sh "git config user.email chris.dines@isbanuk.com"
+                sh "git config --global http.sslVerify false"
+				withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'test-credential', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASSWORD']]) {
+                    sh 'MAVEN_OPTS="-Xmx1024m" ' + "mvn -Dtag=${params.RELEASE_VERSION} release:prepare -DreleaseVersion=${params.RELEASE_VERSION} -DdevelopmentVersion=${params.DEVELOPMENT_VERSION} -Dusername=${GIT_USER} -Dpassword=${GIT_PASSWORD} "
+                }	
+            }
+        }
+        stage ('Perform Maven Release') {
+            steps {
+                withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'test-credential', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASSWORD']]) {
+                    sh 'mvn release:perform'
+                }
+            }
+        }
+    }
+}

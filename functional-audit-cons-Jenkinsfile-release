@@ -1,0 +1,107 @@
+#!groovy
+@Library("pipeline-uk@2.4.0") _
+
+pipeline {
+    agent { 
+		label 'maven' 
+	}
+	
+	parameters {
+        string(defaultValue: '', description: 'RELEASE_VERSION', name: 'RELEASE_VERSION')
+		string(defaultValue: '', description: 'DEVELOPMENT_VERSION', name: 'DEVELOPMENT_VERSION')
+    }
+	
+    options {
+        skipDefaultCheckout()
+        disableConcurrentBuilds()
+		timeout(time: 1, unit: 'HOURS')
+		buildDiscarder(logRotator(daysToKeepStr: '2')) 
+    }
+	
+    stages {
+        stage ('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+		
+        stage ('Prepare Maven Release') {
+            steps {
+                sh "git config user.name \"S0811614\""
+                sh "git config user.email S0811614@myorg.co.uk"
+                sh "git config --global http.sslVerify false"
+				
+                withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'test-credential',
+                    usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASSWORD']]) {
+                    sh 'MAVEN_OPTS="-Xmx1024m" ' + "mvn -B -Dtag=${params.RELEASE_VERSION} release:prepare -DreleaseVersion=${params.RELEASE_VERSION} -DdevelopmentVersion=${params.DEVELOPMENT_VERSION} -Dusername=${GIT_USER} -Dpassword=${GIT_PASSWORD}"
+                }
+            }
+        }
+
+        stage ('Perform Maven Release') {
+            steps {
+                withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'test-credential',
+                    usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASSWORD']]) {
+                    sh 'mvn -B release:perform'
+                }
+            }
+        }
+
+/* ********************************************************
+   We'll handle merging back to development branch manually
+   ********************************************************  		
+		stage ('Checkout Development GIT') {
+            steps {
+                sshagent(['S0811614-ssh']) {
+                    sh '''
+                        echo 'ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $*' > ssh
+                        chmod +x ssh
+                        GIT_SSH="$PWD/ssh" git clone ssh://git@uk-gitlab.almuk.myorguk.corp:2220/cicd-pipeline-uk-reference/helloworld-spring-boot-maven.git
+                    '''
+                     
+                    dir ('helloworld-spring-boot-maven') {
+						sh 'git checkout development'
+                        sh "git config user.name \"S0811614\""
+                        sh "git config user.email check@example.com"
+                        sh "git config --global push.default simple"
+                    }
+                }
+            }
+        }
+
+        stage ('Merge Master to Development GIT') {
+            steps {
+				sshagent (credentials: ['S0811614-ssh']) {
+				    dir ('helloworld-spring-boot-maven') {
+						sh "git merge origin/master"
+					
+    					sh '''
+    					    GIT_SSH="$PWD/../ssh" git push --set-upstream origin development
+    					'''
+				    }
+                }
+            }
+        }
+*/
+    }
+
+	post {
+		always {
+			cleanWs()
+		
+            sh 'echo "All stages finished running"'
+        }
+		
+        failure {
+            emailext(
+				to: '$DEFAULT_RECIPIENTS',
+                subject: "Jenkins FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "<a href='${env.BUILD_URL}'>Fix!</a>",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider'], 
+									[$class: 'CulpritsRecipientProvider'],
+                                    [$class: 'RequesterRecipientProvider'], 
+									[$class: 'FirstFailingBuildSuspectsRecipientProvider']]
+            )
+        }
+    }
+}

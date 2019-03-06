@@ -1,0 +1,40 @@
+#!groovy
+@Library(["pipeline-uk","jenkins-common@master","hyperloop-sec"]) _
+
+hlFullNginxPipeline{
+    // PaaS project name
+    projectName = 'dora-uk'
+    
+    // Test before deploy
+    estlintTest = false
+    csslintTest = false
+    unitTest = false
+    securityTest = false
+    sonarTest = false
+    
+    // ONLY to true to test documentation
+    documentation = false
+
+    // Test after deploy
+    accessibilityTest = false
+    e2eTest = false
+
+    // List of local config files (to delete in the image) 
+    configFiles = 'dist/assets/env/*.json'
+    
+    // JIRA Integration
+    //jiraSite = 'JIRAUK'
+    //jiraURL = 'https://uk-jira.almuk.myorguk.corp'
+    //jiraProject = 'MARKETUK'
+    //jiraTransitonId = 161
+    //jiraStatus = 'Ready for PRE'
+    //jiraLabel = 'Dora_Framework'
+
+    // Confluence Integration
+    //confluenceSite = 'confluence.almuk.myorguk.corp'
+    //confluenceSpaceName = 'DORAUK'
+    //confluenceParentID = 34877012
+    
+    // Product Owners and admin maillist
+    mailList = 'juanjose.garrido@myorg.co.uk'
+}

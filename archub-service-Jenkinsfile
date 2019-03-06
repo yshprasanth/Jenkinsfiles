@@ -1,0 +1,280 @@
+#!groovy
+//@Library(["pipelineuk@2.6.0", "pipelineuk-sec@2.5.0"]) _
+@Library(["pipelineuk@2.6.1", "pipelineuk-sec@2.7.0"]) _
+//
+
+pipeline {
+
+    agent { label 'nodejs8' }
+    
+    options {
+        timeout(time: 1, unit: 'HOURS')
+        skipDefaultCheckout()
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        APP_NAME='archub-service'
+        PROJECT_ID = 'archlib-archub-service'
+        PROJECT_LOCATION = 'ssh://git@uk-gitlab.almuk.myorguk.corp:2220/Architecture_Library/Architecture_Library_Hub/archub-service.git'
+        PROJECT_BRANCH = 'master'
+        PROJECT_TECH = 'js'
+        PROJECT_AUTHOR = 'Diego Hernández'
+        
+        DEPENDENCY_TOLERANCE_WARNING = '10'
+        DEPENDENCY_TOLERANCE_ERROR = '5'
+        TZ = 'Europe/London'
+        
+        GIT_CREDENTIALS = 'S0811972G_GitLab_rsa'
+        MAVEN_PREFIX = 'export MAVEN_OPTS="-Xmx1024m" && '
+        MAVEN_POSFIX = '-s conf/settings.xml'
+        SUREFIRE_TARGET = '**/target/surefire-reports/*.xml'
+        JACOCO_TARGET = 'target/jacoco.exec'
+        STASH_EXCLUDES = 'node_modules/'
+        
+        DOCKER_IMAGE = 'NodeJSCorporateImage' //'JavaSECorporateImage'
+        DOCKER_CREDENTIALS = 'S0811972'
+        DOCKER_PULL_POLICY = 'Always'
+        DOCKER_FILE = './conf/Dockerfile'
+        DOCKER_OPTIONS = '-f ${DOCKER_FILE}'
+        DOCKER_HARBOR = 'registry.cap1.paas.gsnetcloud.corp'
+        OPENSHIFT_PROJECT = 'architecturelibrary'
+        OPENSHIFT_HOST = '${OPENSHIFT_PROJECT}.myorguk.dev.corp'
+
+
+        RESOURCES_CPU_LIMIT = '3'
+        RESOURCES_RAM_LIMIT = '2G'
+        RESOURCES_CPU_REQUEST = '500m'
+        RESOURCES_RAM_REQUEST = '1G'
+        
+        APP_ALIVE = '/archub-service/health'
+        APP_READY = '/archub-service/health'
+        APP_PROTOCOL = 'HTTP'
+
+        CONFIG_LOCATION = 'http://config-service:8080'
+        CONFIG_ENABLED = 'true'
+        CONFIG_LABEL = 'master'
+        CONFIG_PROFILE = 'archub-service'
+        LOG_LEVEL='info'
+        CONFIG_ENVIRONMENT='Dev'
+    }
+
+    stages {
+        
+        stage('Setup') {
+            steps{
+                echo '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n\n\n Environment: \n\n '
+                sh '''
+                alias npm='node --max_semi_space_size=1 --max_old_space_size=1024 /usr/bin/npm'
+                
+                mkdir -p .npm-global
+                mkdir -p _cacache
+                export PATH=.npm-global/bin:$PATH
+                
+                npm config set prefix '.npm-global'
+                npm config set cache '_cacache'
+                npm config set jobs 1
+                npm config set strict-ssl false
+                npm config set registry 'https://nexus.almuk.myorguk.corp/repository/npm-group/'
+                
+                node -v
+                which node
+                npm -v
+                which npm
+                '''
+            }
+        }
+        
+        stage('Fetch') {
+            steps {
+                echo '\n FETCH' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n Fetching code...'
+                checkout scm: [$class: 'GitSCM', userRemoteConfigs: [[url: PROJECT_LOCATION, credentialsId: GIT_CREDENTIALS]], branches: [[name: PROJECT_BRANCH]]], poll: false, changelog: false
+            }
+        }
+
+        stage ('Build') {
+            steps {
+                echo '\n BUILD' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n Building code...'
+                // npm
+                sh '''
+                npm install --loglevel info
+                '''
+                stash name: APP_NAME, excludes: STASH_EXCLUDES
+            }
+        }
+
+        
+        stage('Tests') {
+            steps { 
+                sh ("npm test")
+            }
+        }
+
+        stage('Coverage') {
+            steps{
+                echo '\n COVERAGE' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+//                jacoco( execPattern: JACOCO_TARGET,
+//                    classPattern : '**/*.class',
+//                    sourcePattern : '**/src/main/java',
+//                    exclusionPattern : '**/*Test*.class',
+//                    minimumBranchCoverage :     '45',   maximumBranchCoverage:      '50',   deltaBranchCoverage:        '1',
+//                    minimumClassCoverage :      '45',   maximumClassCoverage:       '50',   deltaClassCoverage:         '1',
+//                    minimumComplexityCoverage : '45',   maximumComplexityCoverage:  '50',   deltaComplexityCoverage:    '1',
+//                    minimumInstructionCoverage: '45',   maximumInstructionCoverage: '50',   deltaInstructionCoverage:   '1',
+//                    minimumLineCoverage :       '45',   maximumLineCoverage:        '50',   deltaLineCoverage:          '1',
+//                    minimumMethodCoverage :     '45',   maximumMethodCoverage:      '50',   deltaMethodCoverage:        '1'
+//                )
+            }
+        }
+
+        stage ('Sonar') {
+            steps {
+                echo '\n SONAR' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                hlsecSonarScanner(PROJECT_TECH,PROJECT_ID,
+                    APP_NAME,
+                    [maxMemory:'256',
+                        coverage:JACOCO_TARGET])
+            }
+        }
+        
+        // stage ('Dependency check') {
+        //     steps {
+        //         echo '\n DEPENDENCY CHECK' +
+        //              '\n ________________________________________________________________________________________________________________________________________________________________'
+        //         hlsecDepCheck([warningdc:DEPENDENCY_TOLERANCE_WARNING,
+        //                 errordc:DEPENDENCY_TOLERANCE_ERROR])
+        //     }
+        // }
+        
+        stage ('Build Image') {
+            agent { 
+                label 'docker' 
+            }
+            steps {
+                echo '\n BUILD IMAGE' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                unstash APP_NAME
+                hlSetEnv('IMAGE_TAG', hlCreateTagName('pkg:version'))
+                echo "Image Tag is: ${IMAGE_TAG}"
+                hlBuildImage (
+                    DOCKER_IMAGE, [
+                        registry: DOCKER_HARBOR,
+                        project: OPENSHIFT_PROJECT,
+                        appName: APP_NAME,
+                        imageName: APP_NAME,
+                        version: IMAGE_TAG,
+                        dockerCredentialId: DOCKER_CREDENTIALS,
+                        dockerBuildOptions: DOCKER_OPTIONS
+                    ]
+                )
+            }
+        }
+        
+        stage ('Nexus') {
+            steps {
+                echo '\n NEXUS PUBLISHING -  TBD' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                
+
+            }
+        }
+        
+        
+        stage ('Deploy') {
+            steps {
+                echo '\n DEPLOY IMAGE TO CAP' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+
+                hlDeployImage(
+                    DOCKER_IMAGE, [
+                        registry: DOCKER_HARBOR,
+                        project: OPENSHIFT_PROJECT,
+                        author: PROJECT_AUTHOR,
+                        appName: APP_NAME,
+                        imageName: APP_NAME,
+                        routeName: APP_NAME,
+                        routePath: APP_NAME,
+                        routeHost: OPENSHIFT_HOST,
+                        version: IMAGE_TAG,
+                        imagePullPolicy: DOCKER_PULL_POLICY,
+                        dockerBuildOptions: DOCKER_OPTIONS,
+                        resources: [limits: [cpu: RESOURCES_CPU_LIMIT, memory: RESOURCES_RAM_LIMIT], requests: [cpu: RESOURCES_CPU_REQUEST, memory: RESOURCES_RAM_REQUEST]],
+                    
+                        livenessProbe: [httpGet:[path:APP_ALIVE, port:8080, scheme:APP_PROTOCOL], 
+                            initialDelaySeconds:300,timeoutSeconds:3,periodSeconds:120,successThreshold:1,failureThreshold:3],
+                        readinessProbe: [httpGet:[path:APP_READY, port:8080, scheme:APP_PROTOCOL], 
+                            initialDelaySeconds:300,timeoutSeconds:3,periodSeconds:120,successThreshold:1,failureThreshold:3],
+                    
+                         envs: [
+                             [name: "CONFIG_LOCATION", value: CONFIG_LOCATION],
+                             [name: "CONFIG_PROFILE", value: CONFIG_PROFILE],
+                             [name: "CONFIG_ENABLED", value: CONFIG_ENABLED],
+                             [name: "CONFIG_LABEL", value: CONFIG_LABEL],
+                             [name: "CONFIG_ENVIRONMENT", value: CONFIG_ENVIRONMENT],
+                             [name: "LOG_LEVEL", value: LOG_LEVEL],
+                             [name: "NODEJSCOLLECTOR", value: "collector"],
+                             [name: "TZ", value: "Europe/London"]
+                         ]
+                    ]
+                )
+
+
+            }
+        }
+        
+        
+        stage ('Verify Service') {
+                    steps {
+                     echo '\n VERIFY SERVICE' +
+                                         '\n ________________________________________________________________________________________________________________________________________________________________'
+                        openshiftVerifyService(
+                            svcName: APP_NAME,
+                            verbose: 'false'
+                        )
+                    }
+                }
+
+        
+        stage ('ArchLib') {
+            steps {
+                echo '\n ARCHITECTURE HUB UPDATE -  TBD' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                
+
+            }
+        }
+
+        stage ('Wrap Up') {
+            steps {
+                echo '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+            }
+        }
+
+    }
+    
+    //TODO: TBD
+    //    post {
+    //        failure {
+    //            emailext(
+    //                to: '$DEFAULT_RECIPIENTS',
+    //                subject: "Jenkins FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+    //                body: "<a href='${env.BUILD_URL}'>Fix me!</a>",
+    //                recipientProviders: [[$class: 'DevelopersRecipientProvider'],
+    //                    [$class: 'CulpritsRecipientProvider'],
+    //                    [$class: 'RequesterRecipientProvider'],
+    //                    [$class: 'FirstFailingBuildSuspectsRecipientProvider']]
+    //            )
+    //        }
+    //    }
+}

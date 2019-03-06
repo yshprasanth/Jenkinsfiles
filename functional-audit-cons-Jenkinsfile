@@ -1,0 +1,226 @@
+#!groovy
+@Library(["hyperloop@2.6.0", 'hyperloop-sec@2.8.1']) _
+
+//
+// Spring Boot Project with Maven and Java 8
+//
+pipeline {
+    agent { 
+        label 'maven' 
+    }
+
+    options {
+        skipDefaultCheckout() // Needed to avoid Git checkout for Docker slave
+        disableConcurrentBuilds()
+        timeout(time: 1, unit: 'HOURS')
+        buildDiscarder(logRotator(daysToKeepStr: '2'))
+    }
+
+    environment {
+            APP_NAME='functional-audit-consumer'
+            PROJECT_ID = 'fbb-functional-audit-consumer'
+            PROJECT_LOCATION = 'ssh://git@uk-gitlab.almuk.myorguk.corp:2220/Architecture_Library/Common_Components/Monitoring/LoggingJava/functional-audit-consumer.git'
+            PROJECT_BRANCH = 'master'
+            PROJECT_TECH = 'java'
+
+            DEPENDENCY_TOLERANCE_WARNING = '10'
+            DEPENDENCY_TOLERANCE_ERROR = '5'
+            TZ = 'Europe/London'
+
+            GIT_CREDENTIALS = 'S0811972G_GitLab_rsa'
+            MAVEN_PREFIX = 'export MAVEN_OPTS="-Xmx1024m" && '
+            MAVEN_POSFIX_SKIPTESTS = '-s conf/settings.xml -B -DargLine="-Xmx256m" -DskipTests'
+            MAVEN_POSFIX = '-s conf/settings.xml -B -DargLine="-Xmx256m"'
+            SUREFIRE_TARGET = '**/target/surefire-reports/*.xml'
+            JACOCO_TARGET = 'target/jacoco.exec'
+
+            DOCKER_IMAGE = 'JavaSECorporateImage' //'JavaSECorporateImage'
+            DOCKER_CREDENTIALS = 'S0811972'
+            DOCKER_PULL_POLICY = 'Always'
+            DOCKER_FILE = './conf/Dockerfile'
+            SUPPRESS_FILE = './conf/suppress_list.xml'
+            DOCKER_OPTIONS = '-f ${DOCKER_FILE}'
+            DOCKER_HARBOR = 'registry.cap1.paas.gsnetcloud.corp'
+            OPENSHIFT_PROJECT = 'architecturelibrary'
+            OPENSHIFT_HOST = '${OPENSHIFT_PROJECT}.myorguk.dev.corp'
+            CONFIG_LABEL = 'master'
+        }
+
+    stages {
+
+        stage ('Setup CI/CD Environment') {
+            steps {
+                echo "GIT Branch is ${env.BRANCH_NAME}"
+
+                //hlSetEnv('IMAGE_TAG', hlCreateTagName('pom:version'))
+                //hlSetEnv('APP_NAME', 'functional-audit-consumer')
+
+                sh 'java -version'
+                sh 'which java'
+                sh 'mvn -version'
+                sh 'which mvn'
+            }
+        }
+
+        stage ('Checkout from GIT') {
+            steps {
+                sh 'echo *** BRANCH : $BRANCH_NAME'
+                checkout scm: [$class: 'GitSCM', userRemoteConfigs: [[url: PROJECT_LOCATION, credentialsId: GIT_CREDENTIALS]], branches: [[name: PROJECT_BRANCH]]], poll: false, changelog: false
+            }
+        }
+
+        stage ('Build source') {
+            // TODO: Remove once Jenkins gets updated with this limit applied to the Maven slave directly.
+            environment {
+                MAVEN_OPTS = '-Xmx256m' // Java heap memory size - limit set to 1/4 available memory
+            }
+
+            steps {
+                // mvn  Pass argLine parameter to limit heap memory for unit tests.
+                sh(MAVEN_PREFIX + ' ' + 'mvn -B clean install' + ' ' + MAVEN_POSFIX_SKIPTESTS)
+                stash name: 'app'
+            }
+        }
+
+        /*stage ('Test') {
+            // TODO: Remove once Jenkins gets updated with this limit applied to the Maven slave directly.
+            environment {
+                MAVEN_OPTS = '-Xmx256m' // Java heap memory size - limit set to 1/4 available memory
+            }
+            
+            steps {
+                sh 'mvn -B test -DargLine="-Xmx256m"'
+                sh(MAVEN_PREFIX + ' ' + 'mvn -B test' + ' ' + MAVEN_POSFIX)
+                stash name: 'app'
+            }
+        }*/
+
+        stage ('Sonar') {
+            steps {
+                echo '\n SONAR' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                hlsecSonarScanner(PROJECT_TECH,PROJECT_ID,
+                                  APP_NAME,
+                                  [maxMemory:'256',
+                                   coverage:JACOCO_TARGET])
+            }
+        }
+        
+        stage ('Dependency check') {
+            steps {
+                echo '\n DEPENDENCY CHECK' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                hlsecDepCheck([warningdc:DEPENDENCY_TOLERANCE_WARNING,
+                               errordc:DEPENDENCY_TOLERANCE_ERROR,
+                               account:'S0811972',
+                               suppressionFile: SUPPRESS_FILE])
+            }
+        }
+
+        stage ('Docker Build') {
+            agent { 
+                label 'docker' 
+            }
+            
+            steps {
+                unstash 'app'
+                hlSetEnv('IMAGE_TAG', hlCreateTagName('pom:version'))
+
+                hlBuildImage (
+                    DOCKER_IMAGE, [
+                        registry: DOCKER_HARBOR,
+                        project: OPENSHIFT_PROJECT,
+                        appName: APP_NAME,
+                        imageName: APP_NAME,
+                        version: IMAGE_TAG,
+                        dockerCredentialId: DOCKER_CREDENTIALS,
+                        dockerBuildOptions: DOCKER_OPTIONS
+                    ]
+                )
+            }
+        }
+
+        stage ('Deploy Image to CAP') {
+            steps {
+
+                hlSetEnv('IMAGE_TAG', hlCreateTagName('pom:version'))
+
+                /* Uncomment below when ready to deploy to PAAS *?
+                /* hlDeployImage(DOCKER_IMAGE, [
+                    registry: DOCKER_HARBOR,
+                    project: OPENSHIFT_PROJECT,
+                    appName: APP_NAME,
+                    version: IMAGE_TAG,
+                    imagePullPolicy: "Always",
+                    resources: [limits: [cpu: "1", memory: "2G"], requests: [cpu: "50m", memory: "1G"]],
+                    livenessProbe:[httpGet:[path:"/health",port:8081,scheme:"HTTP"],initialDelaySeconds:30,timeoutSeconds:10,periodSeconds:10,successThreshold:1,failureThreshold:3],
+                    readinessProbe:[httpGet:[path:"/health",port:8081,scheme:"HTTP"],initialDelaySeconds:180,timeoutSeconds:10,periodSeconds:10,successThreshold:1,failureThreshold:3],
+                    envs: [
+                        [name: "SPRING_CONFIG_LOCATION", value: 'http://config-service:8080'],
+                        [name: "SPRING_CONFIG_ENVIRONMENT", value: "Dev"],
+                        [name: "SPRING_CONFIG_ENABLED", value: "true"],
+                        [name: "SPRING_CONFIG_LABEL", value: 'master'],
+                        [name: "SPRING_CONFIG_PROFILE", value: 'functional-audit-consumer']
+                    ]
+                ])*/
+            }
+        }
+
+        stage ('Verify Service') {
+            steps {
+                openshiftVerifyService(svcName: APP_NAME, verbose: 'false')
+            }
+        }
+/*
+        stage ('Functional Testing') {
+            steps {
+                checkout([$class: 'GitSCM', branches: [[name: '/hellp_world_pipeline']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'S0811512_USRPWD', url:'https://uk-gitlab.almuk.myorguk.corp/Testing_Community/myorg_test_automation_framework.git']]])
+                sh 'mvn clean compile -U -Dmaven.test.skip=true -X'
+                script {
+                    try {
+                        sh 'mvn test -f Automation_Framework_Web/pom.xml -Dgrid.run=true -Dbrowser=chrome -Dcucumber.options="--tags @springboot" -Dgrid.hub.server=http://sh-cap2-zone1-taassel-pro.appls.cap2.paas.gsnetcloud.corp/wd/hub -X'
+                    } finally {
+                        step([$class: 'CucumberReportPublisher', fileExcludePattern: '', fileIncludePattern: '*.json', ignoreFailedTests: true, jenkinsBasePath: '', jsonReportDirectory: 'Automation_Framework_Web/target', missingFails: true, parallelTesting: false, pendingFails: true, skippedFails: true, undefinedFails: true])
+                    }
+                }
+            }
+        }
+
+        stage('Trigger Pre Release'){
+            when {
+                branch 'tags/*'
+            }
+            
+            steps {
+                httpRequest authentication: 'jenkins-pre-s0811512', httpMode: 'POST', ignoreSslErrors: true, responseHandle: 'NONE', url: "https://jenkins-cicd-pipeline-uk-reference-pre.appls.cap1.paas.gsnetcloud.corp/job/cicd-pipeline-uk-reference-pre/job/helloworld-spring-boot-maven/job/helloworld-spring-boot-maven-release/buildWithParameters?VERSION=${env.IMAGE_TAG}"
+            }
+        }
+*/
+    }
+
+    post {
+        always {
+        //    junit '**/target/surefire-reports/*.xml'
+
+            cleanWs()
+            
+            sh 'echo "All stages finished running"'
+        }
+
+        success {
+            sh ("echo 'Job finished successfully'")
+        }
+
+        /*failure {
+            emailext(
+                to: '$DEFAULT_RECIPIENTS',
+                subject: "Jenkins FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "<a href='${env.BUILD_URL}'>Fix me!</a>",
+                recipientProviders: [[$class: 'DevelopersRecipientProvider'], 
+                                    [$class: 'CulpritsRecipientProvider'],
+                                    [$class: 'RequesterRecipientProvider'], 
+                                    [$class: 'FirstFailingBuildSuspectsRecipientProvider']]
+            )
+        }*/
+    }
+}

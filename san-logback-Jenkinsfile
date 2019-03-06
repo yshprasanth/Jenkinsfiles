@@ -1,0 +1,179 @@
+#!groovy
+@Library(["pipelineuk@2.6.0", "pipelineuk-sec@2.6.0"]) _
+
+pipeline {
+
+    agent { label 'maven' }
+    
+    options {
+        timeout(time: 1, unit: 'HOURS')
+        skipDefaultCheckout()
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        APP_NAME='san-logback-appender'
+        PROJECT_ID = 'fbb-monitoring-san-logback-appender'
+        PROJECT_LOCATION = 'ssh://git@uk-gitlab.almuk.myorguk.corp:2220/Architecture_Library/Common_Components/Monitoring/LoggingJava/san-logback-appender.git'
+        PROJECT_BRANCH = 'master'
+        PROJECT_TECH = 'java'
+        
+        DEPENDENCY_TOLERANCE_WARNING = '10'
+        DEPENDENCY_TOLERANCE_ERROR = '5'
+        TZ = 'Europe/London'
+        
+        GIT_CREDENTIALS = 'S0811972G_GitLab_rsa'
+        MAVEN_PREFIX = 'export MAVEN_OPTS="-Xmx1024m" && '
+        MAVEN_POSFIX = '-s conf/settings.xml -B -DargLine="-Xmx256m"'
+        MAVEN_POSFIX_SKIP_TESTS = '-s conf/settings.xml -B -DargLine="-Xmx256m" -DskipTests'
+        SUREFIRE_TARGET = '**/target/surefire-reports/*.xml'
+        JACOCO_TARGET = 'target/jacoco.exec'
+    }
+    
+    stages {
+        
+        stage('Setup') {
+            steps{
+                echo '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n\n\n Environment: \n\n '
+                sh 'java -version'
+                sh 'which java'
+                sh 'mvn -version'
+                sh 'which mvn'
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                echo '\n BUILD' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n Fetching code...'
+                script {
+                    sh 'echo *** BRANCH : $BRANCH_NAME'
+                    checkout scm: [$class: 'GitSCM', userRemoteConfigs: [[url: PROJECT_LOCATION, credentialsId: GIT_CREDENTIALS]], branches: [[name: PROJECT_BRANCH]]], poll: false, changelog: false
+                   
+                   // if (env.BRANCH_NAME.equals("develop")) {
+                   //  git branch: "develop", url: PROJECT_LOCATION, credentialsId: GIT_CREDENTIALS, changelog: false, poll: false
+                   // }
+                   // else { 
+                   //       checkout scm
+                   // }
+                }
+            }
+        }
+        
+
+        stage('Tests') {
+            steps {
+                echo '\n TESTS' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                ansiColor('xterm') {
+                    //sh(MAVEN_PREFIX + ' ' + 'mvn clean verify' + ' ' + MAVEN_POSFIX)
+                    // TODO: Check if needed or not, RESEARCH: Mutations Test
+                    // sh 'mvn -B clean deploy -DargLine="-Xmx256m"'
+                    // sh 'mvn org.pitest:pitest-maven:mutationCoverage'
+                }
+            }
+            //post {
+            //    always {
+                    //junit allowEmptyResults: false, testResults: SUREFIRE_TARGET
+            //    }
+            //}
+        }
+
+        stage('Coverage') {
+            steps{
+                echo '\n COVERAGE' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                jacoco( execPattern: JACOCO_TARGET,
+//                        classPattern : '**/*.class',
+//                        sourcePattern : '**/src/main/java',
+//                        exclusionPattern : '**/*Test*.class',
+                        minimumBranchCoverage :     '45',   maximumBranchCoverage:      '50',   deltaBranchCoverage:        '1',
+                        minimumClassCoverage :      '45',   maximumClassCoverage:       '50',   deltaClassCoverage:         '1',
+                        minimumComplexityCoverage : '45',   maximumComplexityCoverage:  '50',   deltaComplexityCoverage:    '1',
+                        minimumInstructionCoverage: '45',   maximumInstructionCoverage: '50',   deltaInstructionCoverage:   '1',
+                        minimumLineCoverage :       '45',   maximumLineCoverage:        '50',   deltaLineCoverage:          '1',
+                        minimumMethodCoverage :     '45',   maximumMethodCoverage:      '50',   deltaMethodCoverage:        '1'
+                    )
+            }
+        }
+
+        stage ('Sonar') {
+            steps {
+                echo '\n SONAR' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+               // hlsecSonarScanner(PROJECT_TECH,PROJECT_ID,
+               //                   APP_NAME,
+               //                   [maxMemory:'256',
+               //                    coverage:JACOCO_TARGET])
+            }
+        }
+        
+        stage ('Dependency check') {
+            steps {
+                echo '\n DEPENDENCY CHECK' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                //hlsecDepCheck([
+                //                warningdc: 10,
+                //                errordc: 5,
+                //                account:'S0811972'
+                //               ])
+            }
+        }
+        
+        stage ('Build Image') {
+            steps {
+                echo '\n BUILD IMAGE' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                //TODO : TBD
+//                unstash 'app'
+//                hlBuildImage('JavaSECorporateImage', [appName: APP_NAME, project: "architecturelibrary",
+//                    buildUsingDocker: true,
+//                    dockerCredentialId: "test-credential"
+//                ])
+            }
+        }
+        
+        stage ('Nexus') {
+            steps {
+                echo '\n NEXUS PUBLISHING' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                sh(MAVEN_PREFIX + ' ' + 'mvn deploy' + ' ' + MAVEN_POSFIX_SKIP_TESTS)
+            }
+        }
+        
+        stage ('ArchLib') {
+            steps {
+                echo '\n ARCHITECTURE HUB UPDATE -  TBD' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+                
+
+            }
+        }
+
+        stage ('Wrap Up') {
+            steps {
+                echo '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________' +
+                     '\n ________________________________________________________________________________________________________________________________________________________________'
+            }
+        }
+    }
+    //TODO: TBD
+//    post {
+//      failure {
+//            emailext(
+//                to: '$DEFAULT_RECIPIENTS',
+//                subject: "Jenkins FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+//                body: "<a href='${env.BUILD_URL}'>Fix me!</a>",
+//                recipientProviders: [[$class: 'DevelopersRecipientProvider'],
+//                                    [$class: 'CulpritsRecipientProvider'],
+//                                    [$class: 'RequesterRecipientProvider'],
+//                                    [$class: 'FirstFailingBuildSuspectsRecipientProvider']]
+//            )
+//        }
+//    }
+ }

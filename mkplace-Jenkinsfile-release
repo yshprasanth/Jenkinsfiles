@@ -1,0 +1,14 @@
+node('nodejs6'){
+    stage('Get Source Code'){
+        checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'LocalBranch', localBranch: '**']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'dora-svc-acc-ssh-key', url: 'ssh://git@uk-gitlab.almuk.myorguk.corp:2220/dora/framework.git']]])
+    }
+    stage('Perform Release'){
+        sshagent(['dora-svc-acc-ssh-key']) {
+            sh "git config --global user.name \"S0811608\""
+            sh "git config user.email juanjose.garrido@contractor.isbanuk.com"
+            sh "npm config set tag-version-prefix ''"
+            sh "npm version ${env.RELEASE_TYPE}"
+            sh 'git push origin master && git push --tags'
+        }
+    }
+}

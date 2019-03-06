@@ -1,0 +1,72 @@
+#!groovy
+@Library(['hyperloop@2.4.0', 'hyperloop-sec@master']) _
+
+pipeline {
+    agent { label 'maven' }
+    options {
+        skipDefaultCheckout() // Needed to avoid Git checkout for Docker slave
+        disableConcurrentBuilds()
+    }
+    environment {
+        APP_NAME = "commonservices-web-parent"
+        BRANCH_NAME = "master"
+
+    }
+    stages {
+        stage ('Get source code') {
+            steps {
+                echo '\n GET SOURCE CODE' +
+                        '\n ________________________________________________________________________________________________________________________________________________________________' +
+                        '\n Fetching code...'
+
+                script {
+
+                    sh 'echo *** BRANCH : $BRANCH_NAME'
+                    if (env.BRANCH_NAME.equals("develop")) {
+                        git credentialsId: "S0811972G_GitLab_rsa", branch: "develop", url: 'ssh://git@uk-gitlab.almuk.myorguk.corp:2220/Architecture_Library/Common_Components/Monitoring/LoggingJava/commonservices-web-parent.git', changelog: false, poll: false
+                    }
+                    else {
+                        // master and tags/x.x.x
+                        checkout scm
+                    }
+                }
+            }
+        }
+
+        stage ('Test, Build & Deploy') {
+            // TODO: Remove once Jenkins gets updated with this limit applied to the Maven slave directly.
+
+            environment {
+                MAVEN_PREFIX = 'export MAVEN_OPTS="-Xmx1024m" && '
+                MAVEN_POSFIX = '-s conf/settings.xml -B -DargLine="-Xmx256m"'
+            }
+            steps {
+                echo '\n TEST BUILD & DEPLOY' +
+                        '\n ________________________________________________________________________________________________________________________________________________________________'
+
+
+                // Pass argLine parameter to limit heap memory for unit tests.
+                //sh 'mvn -B clean deploy -DargLine="-Xmx256m"'
+                sh(MAVEN_PREFIX + ' ' + 'mvn clean deploy' + ' ' + MAVEN_POSFIX)
+            }
+        }
+
+        
+
+//        stage ('Vulnerability/Dependency Check') {
+//
+//            environment {
+//                SONAR_SCANNER_OPTS='-Xmx256m' // Java heap memory size - limit set to 1/4 available memory
+//            }
+//            steps {
+//                echo '\n VULNERABILITY/DEPENDENCY CHECK' +
+//                        '\n ________________________________________________________________________________________________________________________________________________________________'
+//
+//                hlsecSAST('java','commonservices-web-parent','commonservices-web-parent',[:],[:])
+//            }
+//        }
+
+    }
+
+}
+
